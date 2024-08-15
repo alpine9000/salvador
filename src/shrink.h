@@ -47,7 +47,7 @@ extern "C" {
 #define VISITED_FLAG 0x8000000000000000ULL
 #define EXCL_VISITED_MASK  0x7fffffffffffffffULL
 
-#define NINITIAL_ARRIVALS_PER_POSITION 40
+#define NDEFAULT_INITIAL_ARRIVALS_PER_POSITION 40
 #define NMAX_ARRIVALS_PER_POSITION 109
 #define NMATCHES_PER_INDEX 78
 
@@ -159,7 +159,7 @@ size_t salvador_get_max_compressed_size(const size_t nInputSize);
  * @return actual compressed size, or -1 for error
  */
 size_t salvador_compress(const unsigned char *pInputData, unsigned char *pOutBuffer, const size_t nInputSize, const size_t nMaxOutBufferSize,
-   const unsigned int nFlags, const size_t nMaxOffset, const size_t nDictionarySize, void(*progress)(long long nOriginalSize, long long nCompressedSize), salvador_stats *pStats);
+			 const unsigned int nFlags, const size_t nMaxOffset, const size_t nDictionarySize, const size_t nInitialArrivalsPerPosition, void(*progress)(long long nOriginalSize, long long nCompressedSize), salvador_stats *pStats);
 
 #ifdef __cplusplus
 }

@@ -352,13 +352,13 @@ static inline int salvador_get_literals_varlen_size(const int nLength) {
  * @param nEndOffset offset to end finding matches at (typically the size of the total input window in bytes
  * @param nDepth current insertion depth
  */
-static void salvador_insert_forward_match(salvador_compressor *pCompressor, const unsigned char *pInWindow, const int i, const int nMatchOffset, const int nStartOffset, const int nEndOffset, const int nDepth) {
+static void salvador_insert_forward_match(salvador_compressor *pCompressor, const unsigned char *pInWindow, const int i, const int nMatchOffset, const int nStartOffset, const int nEndOffset, const int nDepth, const size_t nInitialArrivalsPerPosition) {
    const salvador_arrival *arrival = pCompressor->arrival + ((i - nStartOffset) * pCompressor->max_arrivals_per_position);
    const int *rle_len = (const int*)pCompressor->intervals /* reuse */;
    salvador_visited* visited = ((salvador_visited*)pCompressor->pos_data) - nStartOffset /* reuse */;
    int j;
 
-   for (j = 0; j < NINITIAL_ARRIVALS_PER_POSITION && arrival[j].from_slot; j++) {
+   for (j = 0; j < nInitialArrivalsPerPosition && arrival[j].from_slot; j++) {
       if (arrival[j].num_literals) {
          const int nRepOffset = arrival[j].rep_offset;
 
@@ -418,7 +418,7 @@ static void salvador_insert_forward_match(salvador_compressor *pCompressor, cons
                               fwd_depth[r] = 0;
 
                               if (nDepth < 9)
-                                 salvador_insert_forward_match(pCompressor, pInWindow, nRepPos, nMatchOffset, nStartOffset, nEndOffset, nDepth + 1);
+				salvador_insert_forward_match(pCompressor, pInWindow, nRepPos, nMatchOffset, nStartOffset, nEndOffset, nDepth + 1, nInitialArrivalsPerPosition);
                            }
                            else {
                               if (fwd_match[r].length < nCurRepLen && fwd_depth[r] == 0) {
@@ -447,7 +447,7 @@ static void salvador_insert_forward_match(salvador_compressor *pCompressor, cons
  * @param nArrivalsPerPosition number of arrivals to record per input buffer position
  * @param nBlockFlags bit 0: 1 for first block, 0 otherwise; bit 1: 1 for last block, 0 otherwise
  */
-static void salvador_optimize_forward(salvador_compressor *pCompressor, const unsigned char *pInWindow, const int nStartOffset, const int nEndOffset, const int nInsertForwardReps, const int *nCurRepMatchOffset, const int nArrivalsPerPosition, const int nBlockFlags) {
+static void salvador_optimize_forward(salvador_compressor *pCompressor, const unsigned char *pInWindow, const int nStartOffset, const int nEndOffset, const int nInsertForwardReps, const int *nCurRepMatchOffset, const int nArrivalsPerPosition, const int nBlockFlags, const size_t nInitialArrivalsPerPosition) {
    const int nMaxArrivalsPerPosition = pCompressor->max_arrivals_per_position;
    salvador_arrival *arrival = pCompressor->arrival - (nStartOffset * nMaxArrivalsPerPosition);
    const int* rle_len = (const int*)pCompressor->intervals /* reuse */;
@@ -614,7 +614,7 @@ static void salvador_optimize_forward(salvador_compressor *pCompressor, const un
             int nNonRepMatchArrivalIdx, nStartingMatchLen, k;
 
             if (nInsertForwardReps) {
-               salvador_insert_forward_match(pCompressor, pInWindow, i, nMatchOffset, nStartOffset, nEndOffset, 0);
+	      salvador_insert_forward_match(pCompressor, pInWindow, i, nMatchOffset, nStartOffset, nEndOffset, 0, nInitialArrivalsPerPosition);
             }
 
             nNonRepMatchArrivalIdx = -1;
@@ -1563,7 +1563,7 @@ static int salvador_write_block(salvador_compressor* pCompressor, const unsigned
  *
  * @return size of compressed data in output buffer, or -1 if the data is uncompressible
  */
-static int salvador_optimize_and_write_block(salvador_compressor *pCompressor, const unsigned char *pInWindow, const int nPreviousBlockSize, const int nInDataSize, unsigned char *pOutData, const int nMaxOutDataSize, int *nCurBitsOffset, int *nCurBitShift, int *nFinalLiterals, int *nCurRepMatchOffset, const int nBlockFlags) {
+static int salvador_optimize_and_write_block(salvador_compressor *pCompressor, const unsigned char *pInWindow, const int nPreviousBlockSize, const int nInDataSize, unsigned char *pOutData, const int nMaxOutDataSize, int *nCurBitsOffset, int *nCurBitShift, int *nFinalLiterals, int *nCurRepMatchOffset, const int nBlockFlags, const size_t nInitialArrivalsPerPosition) {
    const int nEndOffset = nPreviousBlockSize + nInDataSize;
    int *rle_len = (int*)pCompressor->intervals /* reuse */;
    int *first_offset_for_byte = pCompressor->first_offset_for_byte;
@@ -1664,7 +1664,7 @@ static int salvador_optimize_and_write_block(salvador_compressor *pCompressor, c
    }
 
    /* Compress and insert additional matches */
-   salvador_optimize_forward(pCompressor, pInWindow, nPreviousBlockSize, nEndOffset, 1 /* nInsertForwardReps */, nCurRepMatchOffset, NINITIAL_ARRIVALS_PER_POSITION, nBlockFlags);
+   salvador_optimize_forward(pCompressor, pInWindow, nPreviousBlockSize, nEndOffset, 1 /* nInsertForwardReps */, nCurRepMatchOffset, nInitialArrivalsPerPosition, nBlockFlags, nInitialArrivalsPerPosition);
 
    /* Supplement matches further */
 
@@ -1739,7 +1739,7 @@ static int salvador_optimize_and_write_block(salvador_compressor *pCompressor, c
                         match_depth[m] = 0;
                         m++;
 
-                        salvador_insert_forward_match(pCompressor, pInWindow, nPosition, nMatchOffset, nPreviousBlockSize, nEndOffset, 8);
+                        salvador_insert_forward_match(pCompressor, pInWindow, nPosition, nMatchOffset, nPreviousBlockSize, nEndOffset, 8, nInitialArrivalsPerPosition);
 
                         nInserted++;
                         if (nInserted >= 10)
@@ -1756,7 +1756,7 @@ static int salvador_optimize_and_write_block(salvador_compressor *pCompressor, c
    }
 
    /* Pick final matches */
-   salvador_optimize_forward(pCompressor, pInWindow, nPreviousBlockSize, nEndOffset, 0 /* nInsertForwardReps */, nCurRepMatchOffset, pCompressor->max_arrivals_per_position, nBlockFlags);
+   salvador_optimize_forward(pCompressor, pInWindow, nPreviousBlockSize, nEndOffset, 0 /* nInsertForwardReps */, nCurRepMatchOffset, pCompressor->max_arrivals_per_position, nBlockFlags, nInitialArrivalsPerPosition);
 
    /* Apply reduction and merge pass */
    int nDidReduce;
@@ -1933,7 +1933,7 @@ static void salvador_compressor_destroy(salvador_compressor *pCompressor) {
  *
  * @return size of compressed data in output buffer, or -1 if the data is uncompressible
  */
-static int salvador_compressor_shrink_block(salvador_compressor *pCompressor, const unsigned char *pInWindow, const int nPreviousBlockSize, const int nInDataSize, unsigned char *pOutData, const int nMaxOutDataSize, int *nCurBitsOffset, int *nCurBitShift, int *nFinalLiterals, int *nCurRepMatchOffset, const int nBlockFlags) {
+static int salvador_compressor_shrink_block(salvador_compressor *pCompressor, const unsigned char *pInWindow, const int nPreviousBlockSize, const int nInDataSize, unsigned char *pOutData, const int nMaxOutDataSize, int *nCurBitsOffset, int *nCurBitShift, int *nFinalLiterals, int *nCurRepMatchOffset, const int nBlockFlags, const size_t nInitialArrivals) {
    int nCompressedSize;
 
    if (salvador_build_suffix_array(pCompressor, pInWindow, nPreviousBlockSize + nInDataSize))
@@ -1944,7 +1944,7 @@ static int salvador_compressor_shrink_block(salvador_compressor *pCompressor, co
       }
       salvador_find_all_matches(pCompressor, NMATCHES_PER_INDEX, nPreviousBlockSize, nPreviousBlockSize + nInDataSize);
 
-      nCompressedSize = salvador_optimize_and_write_block(pCompressor, pInWindow, nPreviousBlockSize, nInDataSize, pOutData, nMaxOutDataSize, nCurBitsOffset, nCurBitShift, nFinalLiterals, nCurRepMatchOffset, nBlockFlags);
+      nCompressedSize = salvador_optimize_and_write_block(pCompressor, pInWindow, nPreviousBlockSize, nInDataSize, pOutData, nMaxOutDataSize, nCurBitsOffset, nCurBitShift, nFinalLiterals, nCurRepMatchOffset, nBlockFlags, nInitialArrivals);
    }
 
    return nCompressedSize;
@@ -1977,7 +1977,7 @@ size_t salvador_get_max_compressed_size(const size_t nInputSize) {
  * @return actual compressed size, or -1 for error
  */
 size_t salvador_compress(const unsigned char *pInputData, unsigned char *pOutBuffer, const size_t nInputSize, const size_t nMaxOutBufferSize,
-      const unsigned int nFlags, const size_t nMaxOffset, const size_t nDictionarySize, void(*progress)(long long nOriginalSize, long long nCompressedSize), salvador_stats *pStats) {
+			 const unsigned int nFlags, const size_t nMaxOffset, const size_t nDictionarySize, const size_t nInitialArrivalsPerPosition, void(*progress)(long long nOriginalSize, long long nCompressedSize), salvador_stats *pStats) {
    salvador_compressor compressor;
    size_t nOriginalSize = 0;
    size_t nCompressedSize = 0L;
@@ -2019,8 +2019,7 @@ size_t salvador_compress(const unsigned char *pInputData, unsigned char *pOutBuf
 
          if ((nOriginalSize + nInDataSize) >= nInputSize)
             nBlockFlags |= 2;
-         nOutDataSize = salvador_compressor_shrink_block(&compressor, pInputData + nOriginalSize - nPreviousBlockSize, nPreviousBlockSize, nInDataSize, pOutBuffer + nCompressedSize, nOutDataEnd,
-            &nCurBitsOffset, &nCurBitShift, &nCurFinalLiterals, &nCurRepMatchOffset, nBlockFlags);
+         nOutDataSize = salvador_compressor_shrink_block(&compressor, pInputData + nOriginalSize - nPreviousBlockSize, nPreviousBlockSize, nInDataSize, pOutBuffer + nCompressedSize, nOutDataEnd, &nCurBitsOffset, &nCurBitShift, &nCurFinalLiterals, &nCurRepMatchOffset, nBlockFlags, nInitialArrivalsPerPosition);
          nBlockFlags &= (~1);
 
          if (nOutDataSize >= 0 && nCurFinalLiterals >= 0 && nCurFinalLiterals < nInDataSize) {

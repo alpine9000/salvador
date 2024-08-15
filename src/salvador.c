@@ -106,7 +106,7 @@ static void compression_progress(long long nOriginalSize, long long nCompressedS
    }
 }
 
-static int do_compress(const char *pszInFilename, const char *pszOutFilename, const char *pszDictionaryFilename, const unsigned int nOptions, const unsigned int nMaxWindowSize) {
+static int do_compress(const char *pszInFilename, const char *pszOutFilename, const char *pszDictionaryFilename, const unsigned int nOptions, const unsigned int nMaxWindowSize, unsigned int nInitialArrivalsPerPosition) {
    long long nStartTime = 0LL, nEndTime = 0LL;
    size_t nOriginalSize = 0L, nCompressedSize = 0L, nMaxCompressedSize;
    int nFlags = (nOptions & OPT_CLASSIC) ? 0 : FLG_IS_INVERTED;
@@ -201,7 +201,7 @@ static int do_compress(const char *pszInFilename, const char *pszOutFilename, co
 
    memset(pCompressedData, 0, nMaxCompressedSize);
 
-   nCompressedSize = salvador_compress(pDecompressedData, pCompressedData, nDictionarySize + nOriginalSize, nMaxCompressedSize, nFlags, nMaxWindowSize, nDictionarySize, compression_progress, &stats);
+   nCompressedSize = salvador_compress(pDecompressedData, pCompressedData, nDictionarySize + nOriginalSize, nMaxCompressedSize, nFlags, nMaxWindowSize, nDictionarySize, nInitialArrivalsPerPosition, compression_progress, &stats);
 
    if (nOptions & OPT_VERBOSE) {
       nEndTime = do_get_time();
@@ -271,6 +271,11 @@ static int do_compress(const char *pszInFilename, const char *pszOutFilename, co
          fprintf(stdout, "RLE2 lens: none\n");
       }
       fprintf(stdout, "Safe distance: %d (0x%X)\n", stats.safe_dist, stats.safe_dist);
+
+      int delta = stats.safe_dist + nCompressedSize - nOriginalSize;
+      fprintf(stdout, "Delta: %d\n", delta < 0 ? 0 : delta);
+
+      
    }
    return 0;
 }
@@ -659,7 +664,7 @@ static void xor_data(unsigned char *pBuffer, size_t nBufferSize, unsigned int nS
    }
 }
 
-static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWindowSize, const int nIsQuickTest) {
+static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWindowSize, const int nIsQuickTest, const size_t nInitialArrivalsPerPosition) {
    unsigned char *pGeneratedData;
    unsigned char *pCompressedData;
    unsigned char *pTmpCompressedData;
@@ -720,7 +725,7 @@ static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWind
    /* Test compressing with a too small buffer to do anything, expect to fail cleanly */
    for (i = 0; i < 12; i++) {
       generate_compressible_data(pGeneratedData, i, nSeed, 256, 0.5f);
-      salvador_compress(pGeneratedData, pCompressedData, i, i, nFlags, nMaxWindowSize, 0 /* dictionary size */, NULL, NULL);
+      salvador_compress(pGeneratedData, pCompressedData, i, i, nFlags, nMaxWindowSize, 0 /* dictionary size */, nInitialArrivalsPerPosition, NULL, NULL);
    }
 
    size_t nDataSizeStep = 128;
@@ -742,8 +747,7 @@ static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWind
             generate_compressible_data(pGeneratedData, nGeneratedDataSize, nSeed, nNumLiteralValues[i], fMatchProbability);
 
             /* Try to compress it, expected to succeed */
-            size_t nActualCompressedSize = salvador_compress(pGeneratedData, pCompressedData, nGeneratedDataSize, salvador_get_max_compressed_size(nGeneratedDataSize),
-               nFlags, nMaxWindowSize, 0 /* dictionary size */, NULL, NULL);
+            size_t nActualCompressedSize = salvador_compress(pGeneratedData, pCompressedData, nGeneratedDataSize, salvador_get_max_compressed_size(nGeneratedDataSize), nFlags, nMaxWindowSize, 0 /* dictionary size */, nInitialArrivalsPerPosition, NULL, NULL);
             if (nActualCompressedSize == (size_t)-1 || nActualCompressedSize < (1 + 1 + 1 /* footer */)) {
                free(pTmpDecompressedData);
                pTmpDecompressedData = NULL;
@@ -829,7 +833,7 @@ static int do_self_test(const unsigned int nOptions, const unsigned int nMaxWind
 
 /*---------------------------------------------------------------------------*/
 
-static int do_compr_benchmark(const char *pszInFilename, const char *pszOutFilename, const char *pszDictionaryFilename, const unsigned int nOptions, const unsigned int nMaxWindowSize) {
+static int do_compr_benchmark(const char *pszInFilename, const char *pszOutFilename, const char *pszDictionaryFilename, const unsigned int nOptions, const unsigned int nMaxWindowSize, const size_t nInitialArrivalsPerPosition) {
    size_t nFileSize, nMaxCompressedSize;
    unsigned char *pFileData;
    unsigned char *pCompressedData;
@@ -900,7 +904,7 @@ static int do_compr_benchmark(const char *pszInFilename, const char *pszOutFilen
       memset(pCompressedData + 1024 + nRightGuardPos, nGuard, 1024);
 
       long long t0 = do_get_time();
-      nActualCompressedSize = salvador_compress(pFileData, pCompressedData + 1024, nFileSize, nRightGuardPos, nFlags, nMaxWindowSize, 0 /* dictionary size */, NULL, NULL);
+      nActualCompressedSize = salvador_compress(pFileData, pCompressedData + 1024, nFileSize, nRightGuardPos, nFlags, nMaxWindowSize, 0 /* dictionary size */, nInitialArrivalsPerPosition, NULL, NULL);
       long long t1 = do_get_time();
       if (nActualCompressedSize == (size_t)-1) {
          free(pCompressedData);
@@ -1080,9 +1084,27 @@ int main(int argc, char **argv) {
    char cCommand = 'z';
    unsigned int nOptions = 0;
    unsigned int nMaxWindowSize = 0;
+   unsigned int nInitialArrivalsPerPosition = NDEFAULT_INITIAL_ARRIVALS_PER_POSITION;
 
    for (i = 1; i < argc; i++) {
-      if (!strcmp(argv[i], "-d")) {
+      if (!strcmp(argv[i], "p")) {
+	// for command line compatibility with rnc packer
+      } else if (!strcmp(argv[i], "-m=2")) {
+	// for command line compatibility with rnc packer
+      } else if (!strcmp(argv[i], "-n")) {
+         if ((i + 1) < argc) {
+            char *pEnd = NULL;
+            nInitialArrivalsPerPosition = (int)strtol(argv[i + 1], &pEnd, 10);
+            if (pEnd && pEnd != argv[i + 1] && (nInitialArrivalsPerPosition >= 2 && nInitialArrivalsPerPosition <= 109)) {
+	      i++;
+            }
+            else {
+               nArgsError = 1;
+            }
+         }
+         else
+            nArgsError = 1;	
+      } else if (!strcmp(argv[i], "-d")) {
          if (!nCommandDefined) {
             nCommandDefined = 1;
             cCommand = 'd';
@@ -1218,10 +1240,10 @@ int main(int argc, char **argv) {
    }
 
    if (!nArgsError && cCommand == 't') {
-      return do_self_test(nOptions, nMaxWindowSize, 0);
+     return do_self_test(nOptions, nMaxWindowSize, 0, nInitialArrivalsPerPosition);
    }
    else if (!nArgsError && cCommand == 'T') {
-      return do_self_test(nOptions, nMaxWindowSize, 1);
+     return do_self_test(nOptions, nMaxWindowSize, 1, nInitialArrivalsPerPosition);
    }
 
    if (nArgsError || !pszInFilename || !pszOutFilename) {
@@ -1230,6 +1252,7 @@ int main(int argc, char **argv) {
       fprintf(stderr, "        -c: check resulting stream after compressing\n");
       fprintf(stderr, "        -d: decompress (default: compress)\n");
       fprintf(stderr, "        -b: backwards compression or decompression\n");
+      fprintf(stderr, " -n <size>: set the initial arrivals per position parameter (smaller number == faster but less optimal)\n");            
       fprintf(stderr, " -w <size>: maximum window size, in bytes (16..32639), defaults to maximum\n");
       fprintf(stderr, " -D <file>: use dictionary file\n");
       fprintf(stderr, "   -cbench: benchmark in-memory compression\n");
@@ -1245,7 +1268,7 @@ int main(int argc, char **argv) {
    do_init_time();
 
    if (cCommand == 'z') {
-      int nResult = do_compress(pszInFilename, pszOutFilename, pszDictionaryFilename, nOptions, nMaxWindowSize);
+     int nResult = do_compress(pszInFilename, pszOutFilename, pszDictionaryFilename, nOptions, nMaxWindowSize, nInitialArrivalsPerPosition);
       if (nResult == 0 && nVerifyCompression) {
          return do_compare(pszOutFilename, pszInFilename, pszDictionaryFilename, nOptions);
       } else {
@@ -1256,7 +1279,7 @@ int main(int argc, char **argv) {
       return do_decompress(pszInFilename, pszOutFilename, pszDictionaryFilename, nOptions);
    }
    else if (cCommand == 'B') {
-      return do_compr_benchmark(pszInFilename, pszOutFilename, pszDictionaryFilename, nOptions, nMaxWindowSize);
+     return do_compr_benchmark(pszInFilename, pszOutFilename, pszDictionaryFilename, nOptions, nMaxWindowSize, nInitialArrivalsPerPosition);
    }
    else if (cCommand == 'b') {
       return do_dec_benchmark(pszInFilename, pszOutFilename, pszDictionaryFilename, nOptions);
